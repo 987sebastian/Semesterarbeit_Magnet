@@ -1,0 +1,51 @@
+24*72
+BIOT-SAVART:
+  Converged: 1267/1296 (97.8%)
+  Time: 18 s
+  Avg time: 142.38 ms
+  RMSE: 4.63e-05 T (4.63e+01 uT)
+  Position: mean=10.4 mm, max=15.4 mm
+  Direction: mean=0.4 deg, max=5.3 deg
+DIPOLE:
+  Converged: 1296/1296 (100.0%)
+  Time: 0 s
+  Avg time: 0.11 ms
+  RMSE: 4.72e-05 T (4.72e+01 uT)
+  Position: mean=6.9 mm, max=16.5 mm
+  Direction: mean=0.0 deg, max=4.4 deg
+
+36*108
+BIOT-SAVART:
+  Converged: 1267/1296 (97.8%)
+  Time: 50 s
+  Avg time: 388.05 ms
+  RMSE: 4.63e-05 T (4.63e+01 uT)
+  Position: mean=10.4 mm, max=15.4 mm
+  Direction: mean=0.4 deg, max=5.3 deg
+
+DIPOLE:
+  Converged: 1296/1296 (100.0%)
+  Time: 0 s
+  Avg time: 0.12 ms
+  RMSE: 4.72e-05 T (4.72e+01 uT)
+  Position: mean=6.9 mm, max=16.5 mm
+  Direction: mean=0.0 deg, max=4.4 deg
+
+48*144
+BIOT-SAVART:
+  Converged: 1267/1296 (97.8%)
+  Time: 74 s
+  Avg time: 568.54 ms
+  RMSE: 4.63e-05 T (4.63e+01 uT)
+  Position: mean=10.4 mm, max=15.4 mm
+  Direction: mean=0.4 deg, max=5.3 deg
+
+DIPOLE:
+  Converged: 1296/1296 (100.0%)
+  Time: 0 s
+  Avg time: 0.11 ms
+  RMSE: 4.72e-05 T (4.72e+01 uT)
+  Position: mean=6.9 mm, max=16.5 mm
+  Direction: mean=0.0 deg, max=4.4 deg
+
+SPEEDUP: Dipole is 4999.0x faster

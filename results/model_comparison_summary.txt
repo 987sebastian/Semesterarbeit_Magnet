@@ -1,0 +1,20 @@
+Model Comparison Summary
+========================
+
+BIOT-SAVART:
+  Converged: 1267/1296
+  Time: 22 s
+  Avg time: 173.146 ms
+  RMSE: 4.63073e-05 T
+  Position: 10.3897 mm (max 15.4376 mm)
+  Direction: 0.397335 deg (max 5.29046 deg)
+
+DIPOLE:
+  Converged: 1296/1296
+  Time: 0 s
+  Avg time: 0.108925 ms
+  RMSE: 4.72326e-05 T
+  Position: 6.9353 mm (max 16.4671 mm)
+  Direction: 0.0488657 deg (max 4.39281 deg)
+
+SPEEDUP: 1589.6x

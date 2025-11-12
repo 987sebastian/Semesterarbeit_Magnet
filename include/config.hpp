@@ -58,11 +58,12 @@ namespace biot {
         }
 
         namespace parallel {
-            const int NUM_THREADS = 6;
+            const int NUM_THREADS = 12;
             const bool ENABLE_ROW_PARALLEL = true;
             const bool ENABLE_SENSOR_PARALLEL = false;
             const bool ENABLE_JACOBIAN_PARALLEL = false;
             const int CHUNK_SIZE = 4;
         }
     }
+
 }

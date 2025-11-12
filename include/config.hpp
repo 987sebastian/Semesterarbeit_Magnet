@@ -14,7 +14,7 @@ namespace biot {
         const std::string OUTPUT_ERRORS = "results/pose_error_summary.csv";
 
         namespace magnet {
-            const double BR = 1.2;
+            const double BR = 1.35;
             const double RADIUS = 0.004;
             const double LENGTH = 0.005;
         }
@@ -67,3 +67,4 @@ namespace biot {
     }
 
 }
+

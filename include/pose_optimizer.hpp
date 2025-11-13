@@ -1,7 +1,6 @@
 ﻿#pragma once
 // pose_optimizer.hpp
 // Pose optimization using Gauss-Newton
-#pragma once
 
 #include <Eigen/Dense>
 #include <vector>
@@ -83,5 +82,6 @@ namespace biot {
             Eigen::MatrixXd& J
         );
     };
+
 
 } // namespace biot

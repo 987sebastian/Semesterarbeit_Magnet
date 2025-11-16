@@ -1,7 +1,6 @@
 ﻿#pragma once
 // geometry.hpp
 // Geometry definitions for cylindrical magnet / 柱形磁体几何定义
-#pragma once
 
 namespace biot {
 
@@ -26,5 +25,6 @@ namespace biot {
 
         DiscGrid(int nr = 16, int nth = 48) : Nr(nr), Nth(nth) {}
     };
+
 
 } // namespace biot

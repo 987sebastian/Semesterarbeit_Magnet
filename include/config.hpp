@@ -7,7 +7,7 @@ namespace biot {
     namespace config {
         // Updated file paths with zeroing calibration data / 更新文件路径（带归零校准数据）
         const std::string CALIBRATION_FILE = "data/earth_calibration_with_zeroing_data.json";
-        const std::string OBSERVATION_FILE = "data/Observational_data_new.csv";
+        const std::string OBSERVATION_FILE = "data/Observational_data_sequential.csv";
         const std::string SENSOR_POSITIONS_FILE = "data/sensors_41.csv";
         const std::string OUTPUT_DIR = "results";
         const std::string OUTPUT_SUMMARY = "results/opt_summary.csv";
@@ -65,5 +65,6 @@ namespace biot {
             const int CHUNK_SIZE = 4;
         }
     }
+
 
 }

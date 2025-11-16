@@ -1,5 +1,7 @@
 ﻿// model_adapters.cpp
 #include "model_adapters.hpp"
+#include "biot_field.hpp"
+#include "dipole_field.hpp"
 
 namespace adapters {
 
@@ -77,5 +79,6 @@ namespace adapters {
             jacobian.block<3, 1>(i * 3, 6) = results[i].dB_dm;
         }
     }
+
 
 } // namespace adapters

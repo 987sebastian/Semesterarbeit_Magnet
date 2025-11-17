@@ -1,4 +1,4 @@
-﻿// main_comparison.cpp
+// main_comparison.cpp
 // Model comparison with Earth calibration
 #include <iostream>
 #include <fstream>
@@ -8,6 +8,7 @@
 #include <cmath>
 #include <Windows.h>
 #include <direct.h>
+#include <cstdlib>
 
 #include "geometry.hpp"
 #include "io_utils.hpp"
@@ -143,6 +144,14 @@ int main() {
 
             Eigen::Vector3d p_ref = obs_data.mag_positions[row];
             Eigen::Vector3d u_ref = obs_data.mag_directions[row];
+            // Add noise (thread-safe random numbers) / 添加噪声(线程安全的随机数)
+            unsigned int seed = row + omp_get_thread_num() * 1000;
+            std::srand(seed);
+
+            Eigen::Vector3d p_init = p_ref + Eigen::Vector3d::Random() * 0.01;  // ±10mm
+            Eigen::Vector3d u_init = u_ref + Eigen::Vector3d::Random() * 0.1;
+            u_init.normalize();
+            double scale_init = 1.0;
             if (u_ref.norm() > 0) u_ref.normalize();
             else u_ref << 0, 0, 1;
 

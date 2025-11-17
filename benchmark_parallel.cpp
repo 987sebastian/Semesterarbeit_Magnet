@@ -21,6 +21,7 @@
 #include "pose_optimizer.hpp"
 #include "io_utils.hpp"
 #include "config.hpp"
+#include "cpu_topology.hpp"
 
 using namespace biot;
 
@@ -144,9 +145,26 @@ int main() {
     std::cout << "============================================\n\n";
 
 #ifdef USE_OPENMP
-    int max_threads = omp_get_max_threads();
-    std::cout << "OpenMP: Enabled\n";
-    std::cout << "Max available threads: " << max_threads << "\n\n";
+    // Detect CPU topology
+    CPUTopology cpu_topo = detect_cpu_topology();
+    print_cpu_topology(cpu_topo);
+    std::cout << "\n";
+
+    int max_threads = cpu_topo.performance_cores_threads;
+    std::cout << "Benchmark Configuration:\n";
+    std::cout << "  Testing threads: 1 to " << max_threads << " (P-cores only)\n\n";
+
+#ifdef _WIN32
+    // Bind to performance cores
+    if (cpu_topo.has_hybrid_architecture) {
+        DWORD_PTR process_mask = 0;
+        for (int i = 0; i < max_threads; ++i) {
+            process_mask |= (1ULL << i);
+        }
+        SetProcessAffinityMask(GetCurrentProcess(), process_mask);
+        std::cout << "  CPU affinity: Bound to P-cores (0-" << (max_threads - 1) << ")\n\n";
+    }
+#endif
 #else
     std::cout << "OpenMP: NOT AVAILABLE\n";
     std::cout << "Single-threaded mode only\n\n";

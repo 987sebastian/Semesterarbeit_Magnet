@@ -1,16 +1,16 @@
-﻿// main.cpp
+// main.cpp
+// Biot-Savart pose optimization with random noise initialization and CPU topology detection
 #include <iostream>
-#include <Windows.h>
 #include <vector>
 #include <chrono>
 #include <iomanip>
 #include <string>
-#include <atomic>
+#include <random>
 
 #ifdef _WIN32
+#define NOMINMAX  // Prevent Windows.h min/max macro conflicts
+#include <Windows.h>
 #include <direct.h>
-#else
-#include <sys/stat.h>
 #endif
 
 #include "geometry.hpp"
@@ -18,6 +18,7 @@
 #include "io_utils.hpp"
 #include "pose_optimizer.hpp"
 #include "config.hpp"
+#include "cpu_topology.hpp"
 
 #ifdef USE_OPENMP
 #include <omp.h>
@@ -25,23 +26,68 @@
 
 using namespace biot;
 
+// Thread-safe random noise generation using C++11
+inline Eigen::Vector3d generate_position_noise(int seed, double sigma_mm) {
+    std::mt19937 gen(seed);
+    std::normal_distribution<double> dist(0.0, sigma_mm * 0.001);
+    return Eigen::Vector3d(dist(gen), dist(gen), dist(gen));
+}
+
+inline Eigen::Vector3d generate_direction_noise(int seed, double sigma_deg) {
+    std::mt19937 gen(seed);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+
+    double angle_rad = dist(gen) * sigma_deg * M_PI / 180.0;
+    Eigen::Vector3d axis(dist(gen), dist(gen), dist(gen));
+    axis.normalize();
+
+    return axis * angle_rad;
+}
+
 int main() {
     SetConsoleOutputCP(CP_UTF8);
     std::cout << "============================================" << std::endl;
     std::cout << "  Biot-Savart Pose Optimization" << std::endl;
-    std::cout << "  Earth Calibration + Corrected Test Data" << std::endl;
-    std::cout << "  Analytical Jacobian + 4e-8T tolerance" << std::endl;
+    std::cout << "  Random Noise Initialization + Parallel Processing" << std::endl;
     std::cout << "============================================\n" << std::endl;
 
 #ifdef USE_OPENMP
-    int num_threads = config::parallel::NUM_THREADS;
-    if (num_threads <= 0) {
-        num_threads = omp_get_max_threads();
+    // Auto-detect CPU topology
+    CPUTopology cpu_topo = detect_cpu_topology();
+    print_cpu_topology(cpu_topo);
+    std::cout << "\n";
+
+    // Use performance cores threads
+    int num_threads = cpu_topo.performance_cores_threads;
+
+    // Allow manual override from config
+    if (config::parallel::NUM_THREADS > 0) {
+        num_threads = config::parallel::NUM_THREADS;
+        std::cout << "[Override] Using user-specified threads: " << num_threads << "\n\n";
     }
+
     omp_set_num_threads(num_threads);
     omp_set_dynamic(0);
-    std::cout << "OpenMP: " << num_threads << " threads (Performance cores only)" << std::endl;
-    std::cout << "Note: Using 10 performance cores as specified" << std::endl;
+
+    std::cout << "OpenMP Configuration:\n";
+    std::cout << "  Active threads: " << num_threads << "\n";
+    std::cout << "  Dynamic adjustment: Disabled\n";
+
+#ifdef _WIN32
+    // Bind to performance cores on Windows
+    if (cpu_topo.has_hybrid_architecture) {
+        std::cout << "  CPU affinity: Binding to P-cores (0-"
+            << (cpu_topo.performance_cores_threads - 1) << ")\n";
+
+        DWORD_PTR process_mask = 0;
+        for (int i = 0; i < cpu_topo.performance_cores_threads; ++i) {
+            process_mask |= (1ULL << i);
+        }
+
+        SetProcessAffinityMask(GetCurrentProcess(), process_mask);
+    }
+#endif
+    std::cout << "\n";
 #else
     std::cout << "OpenMP: NOT AVAILABLE" << std::endl;
 #endif
@@ -68,226 +114,212 @@ int main() {
 
     const int total_rows = static_cast<int>(obs_data.mag_positions.size());
 
-#ifdef _WIN32
     _mkdir(config::OUTPUT_DIR.c_str());
-#else
-    mkdir(config::OUTPUT_DIR.c_str(), 0755);
-#endif
 
     DiscGrid disc(config::mesh::NR, config::mesh::NTH);
-    std::cout << "Discretization: Nr=" << disc.Nr << ", Nth=" << disc.Nth
-        << " (total: " << disc.Nr * disc.Nth << " points)" << std::endl;
-    std::cout << "Optimizer: max_iter=" << config::optimizer::MAX_ITERATIONS
-        << ", tol=" << config::optimizer::TOLERANCE << " T\n" << std::endl;
+    std::cout << "Mesh: Nr=" << disc.Nr << ", Nth=" << disc.Nth
+        << " (total: " << disc.Nr * disc.Nth << " points)\n" << std::endl;
 
-    std::cout << "Processing " << total_rows << " rows...\n" << std::endl;
+    // Noise parameters for initial guess
+    const double pos_noise_mm = 5.0;   
+    const double dir_noise_deg = 3.0;   
 
-    std::vector<int> row_indices(total_rows);
-    std::vector<Eigen::Vector3d> positions(total_rows);
-    std::vector<Eigen::Vector3d> directions(total_rows);
-    std::vector<double> scales(total_rows);
-    std::vector<double> pos_errors(total_rows);
-    std::vector<double> dir_errors(total_rows);
-    std::vector<double> rmse_values(total_rows);
-    std::vector<int> nfev_values(total_rows);
-    std::vector<int> status_values(total_rows);
+    std::cout << "Initial Guess Strategy: Ground truth + Gaussian noise\n";
+    std::cout << "  Position noise: σ = " << pos_noise_mm << " mm\n";
+    std::cout << "  Direction noise: σ = " << dir_noise_deg << " deg\n" << std::endl;
 
-    int success_count = 0;
+    std::cout << "Processing " << total_rows << " samples...\n" << std::endl;
 
-    // Use atomic counter for proper progress tracking / 使用原子计数器进行适当的进度跟踪
-    std::atomic<int> completed_count(0);
-    auto last_print = std::chrono::high_resolution_clock::now();
+    std::vector<PoseResult> results(total_rows);
+    std::vector<Eigen::Vector3d> position_errors(total_rows);
+    std::vector<double> direction_errors(total_rows);
+    std::vector<double> processing_times(total_rows);
+
+    int converged_count = 0;
 
 #ifdef USE_OPENMP
-    if (config::parallel::ENABLE_ROW_PARALLEL) {
-#pragma omp parallel reduction(+:success_count)
-        {
-            PoseOptimizer opt(geom, disc, config::optimizer::MAX_ITERATIONS,
-                config::optimizer::TOLERANCE);
-
-#pragma omp for schedule(dynamic, config::parallel::CHUNK_SIZE)
-            for (int row = 0; row < total_rows; ++row) {
-                Eigen::Vector3d p_ref = obs_data.mag_positions[row];
-                Eigen::Vector3d u_ref = obs_data.mag_directions[row];
-                if (u_ref.norm() > 0) u_ref.normalize();
-                else u_ref << 0, 0, 1;
-
-                std::vector<Eigen::Vector3d> sens_cal, B_cal;
-                apply_calibration(obs_data.sensor_positions[row], obs_data.B_measured[row],
-                    cal_data, sens_cal, B_cal);
-
-                PoseResult res = opt.estimate_pose(sens_cal, B_cal, p_ref, u_ref, 1.0);
-
-                row_indices[row] = row;
-                positions[row] = res.position;
-                directions[row] = res.direction;
-                scales[row] = res.scale;
-                rmse_values[row] = res.rmse;
-                nfev_values[row] = res.iterations;
-                status_values[row] = res.converged ? 1 : 0;
-
-                if (res.converged) {
-                    success_count++;
-                }
-
-                Eigen::Vector3d pos_err = res.position - p_ref;
-                pos_errors[row] = pos_err.norm();
-
-                double dot = u_ref.dot(res.direction);
-                if (dot > 1.0) dot = 1.0;
-                if (dot < -1.0) dot = -1.0;
-                dir_errors[row] = std::acos(dot) * 180.0 / M_PI;
-
-                int current_count = ++completed_count;
-                auto current_time = std::chrono::high_resolution_clock::now();
-                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                    current_time - last_print).count();
-
-                if (elapsed >= config::output::PROGRESS_INTERVAL) {
-#pragma omp critical
-                    {
-                        last_print = current_time;
-                        std::cout << "Progress: " << current_count << "/" << total_rows
-                            << " rows completed ("
-                            << std::fixed << std::setprecision(1)
-                            << (100.0 * current_count / total_rows) << "%)" << std::endl;
-                    }
-                }
-            }
-        }
-    }
-    else {
-        // Serial execution / 串行执行
+#pragma omp parallel reduction(+:converged_count)
+#endif
+    {
         PoseOptimizer opt(geom, disc, config::optimizer::MAX_ITERATIONS,
             config::optimizer::TOLERANCE);
 
-        for (int row = 0; row < total_rows; ++row) {
-            Eigen::Vector3d p_ref = obs_data.mag_positions[row];
-            Eigen::Vector3d u_ref = obs_data.mag_directions[row];
+#ifdef USE_OPENMP
+#pragma omp for schedule(dynamic, config::parallel::CHUNK_SIZE)
+#endif
+        for (int i = 0; i < total_rows; ++i) {
+            auto iter_start = std::chrono::high_resolution_clock::now();
+
+            Eigen::Vector3d p_ref = obs_data.mag_positions[i];
+            Eigen::Vector3d u_ref = obs_data.mag_directions[i];
             if (u_ref.norm() > 0) u_ref.normalize();
             else u_ref << 0, 0, 1;
 
-            std::vector<Eigen::Vector3d> sens_cal, B_cal;
-            apply_calibration(obs_data.sensor_positions[row], obs_data.B_measured[row],
-                cal_data, sens_cal, B_cal);
+            // Generate thread-safe random seed
+#ifdef USE_OPENMP
+            int thread_id = omp_get_thread_num();
+#else
+            int thread_id = 0;
+#endif
+            int seed = i * 1000 + thread_id;
 
-            PoseResult res = opt.estimate_pose(sens_cal, B_cal, p_ref, u_ref, 1.0);
+            // Add position noise: ground truth + Gaussian noise
+            Eigen::Vector3d p_init = p_ref + generate_position_noise(seed, pos_noise_mm);
 
-            row_indices[row] = row;
-            positions[row] = res.position;
-            directions[row] = res.direction;
-            scales[row] = res.scale;
-            rmse_values[row] = res.rmse;
-            nfev_values[row] = res.iterations;
-            status_values[row] = res.converged ? 1 : 0;
+            // Add direction noise: ground truth + small rotation
+            Eigen::Vector3d rot_vec = generate_direction_noise(seed + 123, dir_noise_deg);
+            double angle = rot_vec.norm();
 
-            if (res.converged) {
-                success_count++;
+            Eigen::Vector3d u_init;
+            if (angle > 1e-10) {
+                Eigen::Vector3d axis = rot_vec.normalized();
+
+                // Rodrigues rotation formula
+                u_init = u_ref * std::cos(angle)
+                    + axis.cross(u_ref) * std::sin(angle)
+                    + axis * (axis.dot(u_ref)) * (1.0 - std::cos(angle));
+                u_init.normalize();
+            }
+            else {
+                u_init = u_ref;
             }
 
-            Eigen::Vector3d pos_err = res.position - p_ref;
-            pos_errors[row] = pos_err.norm();
+            std::vector<Eigen::Vector3d> sensors_cal, B_cal;
+            apply_calibration(obs_data.sensor_positions[i], obs_data.B_measured[i],
+                cal_data, sensors_cal, B_cal);
+
+            PoseResult res = opt.estimate_pose(sensors_cal, B_cal, p_init, u_init, 1.0);
+
+            auto iter_end = std::chrono::high_resolution_clock::now();
+            double elapsed_ms = std::chrono::duration<double, std::milli>(iter_end - iter_start).count();
+
+            results[i] = res;
+            position_errors[i] = res.position - p_ref;
 
             double dot = u_ref.dot(res.direction);
             if (dot > 1.0) dot = 1.0;
             if (dot < -1.0) dot = -1.0;
-            dir_errors[row] = std::acos(dot) * 180.0 / M_PI;
+            direction_errors[i] = std::acos(dot) * 180.0 / M_PI;
 
-            if ((row + 1) % config::output::PROGRESS_INTERVAL == 0) {
-                std::cout << "Progress: " << (row + 1) << "/" << total_rows
-                    << " rows completed ("
-                    << std::fixed << std::setprecision(1)
-                    << (100.0 * (row + 1) / total_rows) << "%)" << std::endl;
+            processing_times[i] = elapsed_ms;
+
+            if (res.converged) {
+                converged_count++;
+            }
+
+            if ((i + 1) % config::output::PROGRESS_INTERVAL == 0 || i == total_rows - 1) {
+#ifdef USE_OPENMP
+#pragma omp critical
+#endif
+                {
+                    std::cout << "Progress: " << (i + 1) << "/" << total_rows
+                        << " (" << std::fixed << std::setprecision(1)
+                        << (100.0 * (i + 1) / total_rows) << "%)" << std::endl;
+                }
             }
         }
     }
-#else
-    // Serial execution without OpenMP / 不使用OpenMP的串行执行
-    PoseOptimizer opt(geom, disc, config::optimizer::MAX_ITERATIONS,
-        config::optimizer::TOLERANCE);
-
-    for (int row = 0; row < total_rows; ++row) {
-        Eigen::Vector3d p_ref = obs_data.mag_positions[row];
-        Eigen::Vector3d u_ref = obs_data.mag_directions[row];
-        if (u_ref.norm() > 0) u_ref.normalize();
-        else u_ref << 0, 0, 1;
-
-        std::vector<Eigen::Vector3d> sens_cal, B_cal;
-        apply_calibration(obs_data.sensor_positions[row], obs_data.B_measured[row],
-            cal_data, sens_cal, B_cal);
-
-        PoseResult res = opt.estimate_pose(sens_cal, B_cal, p_ref, u_ref, 1.0);
-
-        row_indices[row] = row;
-        positions[row] = res.position;
-        directions[row] = res.direction;
-        scales[row] = res.scale;
-        rmse_values[row] = res.rmse;
-        nfev_values[row] = res.iterations;
-        status_values[row] = res.converged ? 1 : 0;
-
-        if (res.converged) {
-            success_count++;
-        }
-
-        Eigen::Vector3d pos_err = res.position - p_ref;
-        pos_errors[row] = pos_err.norm();
-
-        double dot = u_ref.dot(res.direction);
-        if (dot > 1.0) dot = 1.0;
-        if (dot < -1.0) dot = -1.0;
-        dir_errors[row] = std::acos(dot) * 180.0 / M_PI;
-
-        if ((row + 1) % config::output::PROGRESS_INTERVAL == 0) {
-            std::cout << "Progress: " << (row + 1) << "/" << total_rows
-                << " rows completed ("
-                << std::fixed << std::setprecision(1)
-                << (100.0 * (row + 1) / total_rows) << "%)" << std::endl;
-        }
-    }
-#endif
 
     auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time);
+    auto total_duration = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time);
 
-    std::cout << "\n============================================" << std::endl;
-    std::cout << "  Results Summary" << std::endl;
-    std::cout << "============================================\n" << std::endl;
+    // Compute statistics
+    double sum_pos_error = 0.0, sum_dir_error = 0.0, sum_rmse = 0.0, sum_time = 0.0;
+    double max_pos_error = 0.0, max_dir_error = 0.0;
+    int total_iterations = 0;
 
+    for (int i = 0; i < total_rows; ++i) {
+        double pos_err = position_errors[i].norm();
+        sum_pos_error += pos_err;
+        sum_dir_error += direction_errors[i];
+        sum_rmse += results[i].rmse;
+        sum_time += processing_times[i];
+        total_iterations += results[i].iterations;
+
+        if (pos_err > max_pos_error) max_pos_error = pos_err;
+        if (direction_errors[i] > max_dir_error) max_dir_error = direction_errors[i];
+    }
+
+    double mean_pos_error = sum_pos_error / total_rows;
+    double mean_dir_error = sum_dir_error / total_rows;
+    double mean_rmse = sum_rmse / total_rows;
+    double mean_time = sum_time / total_rows;
+    double mean_iterations = (double)total_iterations / total_rows;
+
+    // Prepare data for saving
+    std::vector<int> row_indices(total_rows);
+    std::vector<Eigen::Vector3d> positions(total_rows);
+    std::vector<Eigen::Vector3d> directions(total_rows);
+    std::vector<double> scales(total_rows);
+    std::vector<double> rmse_values(total_rows);
+    std::vector<int> nfev_values(total_rows);
+    std::vector<int> status_values(total_rows);
+    std::vector<double> pos_errors_norm(total_rows);
+    std::vector<double> dir_errors_deg(total_rows);
+
+    for (int i = 0; i < total_rows; ++i) {
+        row_indices[i] = i;
+        positions[i] = results[i].position;
+        directions[i] = results[i].direction;
+        scales[i] = results[i].scale;
+        rmse_values[i] = results[i].rmse;
+        nfev_values[i] = results[i].iterations;
+        status_values[i] = results[i].converged ? 1 : 0;
+        pos_errors_norm[i] = position_errors[i].norm();
+        dir_errors_deg[i] = direction_errors[i];
+    }
+
+    // Save results
     save_results(config::OUTPUT_SUMMARY, row_indices, positions, directions, scales,
         rmse_values, nfev_values, status_values, "biot");
-    save_error_summary(config::OUTPUT_ERRORS, row_indices, pos_errors, dir_errors);
+    save_error_summary(config::OUTPUT_ERRORS, row_indices, pos_errors_norm, dir_errors_deg);
 
-    // Statistics / 统计数据
-    double mean_pos = 0.0, mean_dir = 0.0, max_pos = 0.0, max_dir = 0.0;
-    double total_iters = 0.0, mean_rmse = 0.0;
-
-    for (size_t i = 0; i < pos_errors.size(); ++i) {
-        mean_pos += pos_errors[i];
-        mean_dir += dir_errors[i];
-        mean_rmse += rmse_values[i];
-        total_iters += nfev_values[i];
-        if (pos_errors[i] > max_pos) max_pos = pos_errors[i];
-        if (dir_errors[i] > max_dir) max_dir = dir_errors[i];
-    }
-    mean_pos /= total_rows;
-    mean_dir /= total_rows;
-    mean_rmse /= total_rows;
-    double avg_iters = total_iters / total_rows;
-
-    std::cout << "Total: " << total_rows << ", Converged: " << success_count
-        << " (" << std::fixed << std::setprecision(1)
-        << (100.0 * success_count / total_rows) << "%)" << std::endl;
-    std::cout << "Time: " << duration.count() << " s, Throughput: "
-        << std::setprecision(1) << (total_rows / (double)duration.count()) << " Hz" << std::endl;
-    std::cout << "\nAverage iterations: " << std::setprecision(1) << avg_iters << std::endl;
-    std::cout << "Average RMSE: " << std::scientific << std::setprecision(2)
-        << mean_rmse << " T (" << (mean_rmse * 1e6) << " µT)" << std::endl;
-    std::cout << "\nPosition error: mean=" << std::fixed << std::setprecision(1)
-        << mean_pos * 1000 << " mm, max=" << max_pos * 1000 << " mm" << std::endl;
-    std::cout << "Direction error: mean=" << mean_dir << " deg, max="
-        << max_dir << " deg" << std::endl;
+    // Print summary
     std::cout << "\n============================================" << std::endl;
+    std::cout << "  OPTIMIZATION SUMMARY" << std::endl;
+    std::cout << "============================================" << std::endl;
+    std::cout << "Total samples:    " << total_rows << std::endl;
+    std::cout << "Converged:        " << converged_count << " ("
+        << std::fixed << std::setprecision(1)
+        << (100.0 * converged_count / total_rows) << "%)" << std::endl;
+    std::cout << "Total time:       " << total_duration.count() << " seconds" << std::endl;
+    std::cout << "Avg time/sample:  " << std::setprecision(2) << mean_time << " ms" << std::endl;
+    std::cout << "Avg iterations:   " << std::setprecision(1) << mean_iterations << std::endl;
+
+    std::cout << "\n============================================" << std::endl;
+    std::cout << "  ACCURACY METRICS" << std::endl;
+    std::cout << "============================================" << std::endl;
+    std::cout << std::scientific << std::setprecision(2);
+    std::cout << "Mean RMSE:        " << mean_rmse << " T ("
+        << std::fixed << std::setprecision(2) << mean_rmse * 1e6 << " µT)" << std::endl;
+
+    std::cout << "\nPosition Error:" << std::endl;
+    std::cout << "  Mean:  " << std::setprecision(1) << mean_pos_error * 1000 << " mm" << std::endl;
+    std::cout << "  Max:   " << max_pos_error * 1000 << " mm" << std::endl;
+
+    std::cout << "\nDirection Error:" << std::endl;
+    std::cout << "  Mean:  " << mean_dir_error << " degrees" << std::endl;
+    std::cout << "  Max:   " << max_dir_error << " degrees" << std::endl;
+
+    // Real-time performance assessment
+    double throughput = 1000.0 / mean_time;
+    std::cout << "\n============================================" << std::endl;
+    std::cout << "  REAL-TIME PERFORMANCE" << std::endl;
+    std::cout << "============================================" << std::endl;
+    std::cout << "Throughput: " << std::fixed << std::setprecision(1) << throughput << " Hz" << std::endl;
+
+    if (throughput >= 50.0) {
+        std::cout << "Status: ✓ Meets >50Hz real-time requirement" << std::endl;
+    }
+    else {
+        std::cout << "Status: ✗ Below 50Hz real-time requirement" << std::endl;
+        std::cout << "  (Need " << std::setprecision(1) << (50.0 / throughput)
+            << "x speedup)" << std::endl;
+    }
+
+    std::cout << "\n[OK] Results saved to:" << std::endl;
+    std::cout << "  - " << config::OUTPUT_SUMMARY << std::endl;
+    std::cout << "  - " << config::OUTPUT_ERRORS << std::endl;
 
     return 0;
 }

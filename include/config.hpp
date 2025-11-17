@@ -52,7 +52,7 @@ namespace biot {
         }
 
         namespace output {
-            const int PRECISION = 12;
+            const int PRECISION = 0;
             const int PROGRESS_INTERVAL = 5;
             const bool VERBOSE = false;
         }
@@ -68,3 +68,4 @@ namespace biot {
 
 
 }
+

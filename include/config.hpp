@@ -1,4 +1,4 @@
-﻿// config.hpp
+// config.hpp
 // Practical configuration with zeroing support / 实用配置（带归零支持）
 #pragma once
 #include <string>
@@ -21,12 +21,12 @@ namespace biot {
 
         // Balanced mesh for speed and accuracy / 平衡网格，兼顾速度和精度
         namespace mesh {
-            const int NR = 24;
-            const int NTH = 72;
+            const int NR = 18;
+            const int NTH = 54;
         }
 
         namespace optimizer {
-            const int MAX_ITERATIONS = 15;
+            const int MAX_ITERATIONS = 10;
 
             // Keep theoretical target but use practical convergence in code
             // 保持理论目标但在代码中使用实际收敛性
@@ -52,13 +52,13 @@ namespace biot {
         }
 
         namespace output {
-            const int PRECISION = 0;
+            const int PRECISION = 12;
             const int PROGRESS_INTERVAL = 5;
             const bool VERBOSE = false;
         }
 
         namespace parallel {
-            const int NUM_THREADS = 12;
+            const int NUM_THREADS = 0;
             const bool ENABLE_ROW_PARALLEL = true;
             const bool ENABLE_SENSOR_PARALLEL = false;
             const bool ENABLE_JACOBIAN_PARALLEL = false;
@@ -66,6 +66,4 @@ namespace biot {
         }
     }
 
-
 }
-

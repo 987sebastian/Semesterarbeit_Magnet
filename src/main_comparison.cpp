@@ -1,20 +1,25 @@
 // main_comparison.cpp
-// Model comparison with Earth calibration
+// Model comparison with random noise initialization and CPU topology detection
 #include <iostream>
 #include <fstream>
 #include <vector>
 #include <chrono>
 #include <iomanip>
 #include <cmath>
+#include <random>
+
+#ifdef _WIN32
+#define NOMINMAX  // Prevent Windows.h min/max macro conflicts
 #include <Windows.h>
 #include <direct.h>
-#include <cstdlib>
+#endif
 
 #include "geometry.hpp"
 #include "io_utils.hpp"
 #include "model_adapters.hpp"
 #include "pose_optimizer_generic.hpp"
 #include "config.hpp"
+#include "cpu_topology.hpp"
 
 #ifdef USE_OPENMP
 #include <omp.h>
@@ -27,6 +32,24 @@ using namespace generic;
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+// Thread-safe random noise generation using C++11
+inline Eigen::Vector3d generate_position_noise(int seed, double sigma_mm) {
+    std::mt19937 gen(seed);
+    std::normal_distribution<double> dist(0.0, sigma_mm * 0.001);
+    return Eigen::Vector3d(dist(gen), dist(gen), dist(gen));
+}
+
+inline Eigen::Vector3d generate_direction_noise(int seed, double sigma_deg) {
+    std::mt19937 gen(seed);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+
+    double angle_rad = dist(gen) * sigma_deg * M_PI / 180.0;
+    Eigen::Vector3d axis(dist(gen), dist(gen), dist(gen));
+    axis.normalize();
+
+    return axis * angle_rad;
+}
 
 void save_detailed_results(
     const std::string& filename,
@@ -67,16 +90,46 @@ int main() {
 
     std::cout << "============================================" << std::endl;
     std::cout << "  Biot-Savart vs Dipole Comparison" << std::endl;
-    std::cout << "  Earth Calibration + Corrected Test Data" << std::endl;
+    std::cout << "  Random Noise Initialization + Parallel Processing" << std::endl;
     std::cout << "============================================\n" << std::endl;
 
 #ifdef USE_OPENMP
-    int num_threads = config::parallel::NUM_THREADS;
-    if (num_threads <= 0) num_threads = omp_get_max_threads();
+    // Auto-detect CPU topology
+    CPUTopology cpu_topo = detect_cpu_topology();
+    print_cpu_topology(cpu_topo);
+    std::cout << "\n";
+
+    // Use performance cores threads
+    int num_threads = cpu_topo.performance_cores_threads;
+
+    // Allow manual override from config
+    if (config::parallel::NUM_THREADS > 0) {
+        num_threads = config::parallel::NUM_THREADS;
+        std::cout << "[Override] Using user-specified threads: " << num_threads << "\n\n";
+    }
+
     omp_set_num_threads(num_threads);
     omp_set_dynamic(0);
-    std::cout << "OpenMP: " << num_threads << " threads (Performance cores only)" << std::endl;
-    std::cout << "Note: Using 6 performance cores as specified\n" << std::endl;
+
+    std::cout << "OpenMP Configuration:\n";
+    std::cout << "  Active threads: " << num_threads << "\n";
+    std::cout << "  Dynamic adjustment: Disabled\n";
+
+#ifdef _WIN32
+    // Bind to performance cores on Windows
+    if (cpu_topo.has_hybrid_architecture) {
+        std::cout << "  CPU affinity: Binding to P-cores (0-"
+            << (cpu_topo.performance_cores_threads - 1) << ")\n";
+
+        DWORD_PTR process_mask = 0;
+        for (int i = 0; i < cpu_topo.performance_cores_threads; ++i) {
+            process_mask |= (1ULL << i);
+        }
+
+        SetProcessAffinityMask(GetCurrentProcess(), process_mask);
+    }
+#endif
+    std::cout << "\n";
 #endif
 
     CylinderGeom geom(config::magnet::BR, config::magnet::RADIUS, config::magnet::LENGTH);
@@ -105,8 +158,16 @@ int main() {
     std::cout << "Discretization: Nr=" << disc.Nr << ", Nth=" << disc.Nth
         << " (total: " << disc.Nr * disc.Nth << " points)\n" << std::endl;
 
+    // Noise parameters for initial guess
+    const double pos_noise_mm = 5.0;   
+    const double dir_noise_deg = 3.0;   
+
+    std::cout << "Initial Guess Strategy: Ground truth + Gaussian noise\n";
+    std::cout << "  Position noise: σ = " << pos_noise_mm << " mm\n";
+    std::cout << "  Direction noise: σ = " << dir_noise_deg << " deg\n" << std::endl;
+
     // =================================================================
-    // BIOT-SAVART MODEL / BIOT-SAVART模型
+    // BIOT-SAVART MODEL
     // =================================================================
     std::cout << "\n========================================" << std::endl;
     std::cout << "Testing BIOT-SAVART Model" << std::endl;
@@ -144,43 +205,91 @@ int main() {
 
             Eigen::Vector3d p_ref = obs_data.mag_positions[row];
             Eigen::Vector3d u_ref = obs_data.mag_directions[row];
-            // Add noise (thread-safe random numbers) / 添加噪声(线程安全的随机数)
-            unsigned int seed = row + omp_get_thread_num() * 1000;
-            std::srand(seed);
-
-            Eigen::Vector3d p_init = p_ref + Eigen::Vector3d::Random() * 0.01;  // ±10mm
-            Eigen::Vector3d u_init = u_ref + Eigen::Vector3d::Random() * 0.1;
-            u_init.normalize();
-            double scale_init = 1.0;
             if (u_ref.norm() > 0) u_ref.normalize();
             else u_ref << 0, 0, 1;
 
-            std::vector<Eigen::Vector3d> sens_cal, B_cal;
-            apply_calibration(obs_data.sensor_positions[row], obs_data.B_measured[row],
-                cal_data, sens_cal, B_cal);
+            // Generate thread-safe random seed
+#ifdef USE_OPENMP
+            int thread_id = omp_get_thread_num();
+#else
+            int thread_id = 0;
+#endif
+            int seed = row * 1000 + thread_id;
 
-            PoseResult res = optimizer.estimate_pose(sens_cal, B_cal, p_ref, u_ref, 1.0);
+            // Add position noise: ground truth + Gaussian noise
+            Eigen::Vector3d p_init = p_ref + generate_position_noise(seed, pos_noise_mm);
 
-            auto row_end = std::chrono::high_resolution_clock::now();
-            double elapsed_ms = std::chrono::duration<double, std::milli>(row_end - row_start).count();
+            // Add direction noise: ground truth + small rotation
+            Eigen::Vector3d rot_vec = generate_direction_noise(seed + 123, dir_noise_deg);
+            double angle = rot_vec.norm();
 
-            biot_row_indices[row] = row;
-            biot_positions[row] = res.position;
-            biot_directions[row] = res.direction;
-            biot_scales[row] = res.scale;
-            biot_rmse[row] = res.rmse;
-            biot_status[row] = res.converged ? 1 : 0;
-            biot_time_ms[row] = elapsed_ms;
+            if (angle > 1e-10) {
+                Eigen::Vector3d axis = rot_vec.normalized();
 
-            if (res.converged) biot_converged++;
+                // Rodrigues rotation formula
+                Eigen::Vector3d u_init = u_ref * std::cos(angle)
+                    + axis.cross(u_ref) * std::sin(angle)
+                    + axis * (axis.dot(u_ref)) * (1.0 - std::cos(angle));
+                u_init.normalize();
 
-            Eigen::Vector3d pos_err = res.position - p_ref;
-            biot_pos_errors[row] = pos_err.norm();
+                // Apply calibration
+                std::vector<Eigen::Vector3d> sens_cal, B_cal;
+                apply_calibration(obs_data.sensor_positions[row], obs_data.B_measured[row],
+                    cal_data, sens_cal, B_cal);
 
-            double dot = u_ref.dot(res.direction);
-            if (dot > 1.0) dot = 1.0;
-            if (dot < -1.0) dot = -1.0;
-            biot_dir_errors[row] = std::acos(dot) * 180.0 / M_PI;
+                // Optimize pose
+                PoseResult res = optimizer.estimate_pose(sens_cal, B_cal, p_init, u_init, 1.0);
+
+                auto row_end = std::chrono::high_resolution_clock::now();
+                double elapsed_ms = std::chrono::duration<double, std::milli>(row_end - row_start).count();
+
+                biot_row_indices[row] = row;
+                biot_positions[row] = res.position;
+                biot_directions[row] = res.direction;
+                biot_scales[row] = res.scale;
+                biot_rmse[row] = res.rmse;
+                biot_status[row] = res.converged ? 1 : 0;
+                biot_time_ms[row] = elapsed_ms;
+
+                if (res.converged) biot_converged++;
+
+                Eigen::Vector3d pos_err = res.position - p_ref;
+                biot_pos_errors[row] = pos_err.norm();
+
+                double dot = u_ref.dot(res.direction);
+                if (dot > 1.0) dot = 1.0;
+                if (dot < -1.0) dot = -1.0;
+                biot_dir_errors[row] = std::acos(dot) * 180.0 / M_PI;
+            }
+            else {
+                // Fallback if rotation angle is too small
+                std::vector<Eigen::Vector3d> sens_cal, B_cal;
+                apply_calibration(obs_data.sensor_positions[row], obs_data.B_measured[row],
+                    cal_data, sens_cal, B_cal);
+
+                PoseResult res = optimizer.estimate_pose(sens_cal, B_cal, p_init, u_ref, 1.0);
+
+                auto row_end = std::chrono::high_resolution_clock::now();
+                double elapsed_ms = std::chrono::duration<double, std::milli>(row_end - row_start).count();
+
+                biot_row_indices[row] = row;
+                biot_positions[row] = res.position;
+                biot_directions[row] = res.direction;
+                biot_scales[row] = res.scale;
+                biot_rmse[row] = res.rmse;
+                biot_status[row] = res.converged ? 1 : 0;
+                biot_time_ms[row] = elapsed_ms;
+
+                if (res.converged) biot_converged++;
+
+                Eigen::Vector3d pos_err = res.position - p_ref;
+                biot_pos_errors[row] = pos_err.norm();
+
+                double dot = u_ref.dot(res.direction);
+                if (dot > 1.0) dot = 1.0;
+                if (dot < -1.0) dot = -1.0;
+                biot_dir_errors[row] = std::acos(dot) * 180.0 / M_PI;
+            }
         }
     }
 
@@ -192,7 +301,7 @@ int main() {
         biot_rmse, biot_status, biot_pos_errors, biot_dir_errors, biot_time_ms);
 
     // =================================================================
-    // DIPOLE MODEL / DIPOLE模型
+    // DIPOLE MODEL
     // =================================================================
     std::cout << "\n========================================" << std::endl;
     std::cout << "Testing DIPOLE Model" << std::endl;
@@ -233,32 +342,86 @@ int main() {
             if (u_ref.norm() > 0) u_ref.normalize();
             else u_ref << 0, 0, 1;
 
-            std::vector<Eigen::Vector3d> sens_cal, B_cal;
-            apply_calibration(obs_data.sensor_positions[row], obs_data.B_measured[row],
-                cal_data, sens_cal, B_cal);
+            // Generate thread-safe random seed (same as Biot-Savart for fair comparison)
+#ifdef USE_OPENMP
+            int thread_id = omp_get_thread_num();
+#else
+            int thread_id = 0;
+#endif
+            int seed = row * 1000 + thread_id;
 
-            PoseResult res = optimizer.estimate_pose(sens_cal, B_cal, p_ref, u_ref, 1.0);
+            // Add position noise
+            Eigen::Vector3d p_init = p_ref + generate_position_noise(seed, pos_noise_mm);
 
-            auto row_end = std::chrono::high_resolution_clock::now();
-            double elapsed_ms = std::chrono::duration<double, std::milli>(row_end - row_start).count();
+            // Add direction noise
+            Eigen::Vector3d rot_vec = generate_direction_noise(seed + 123, dir_noise_deg);
+            double angle = rot_vec.norm();
 
-            dipole_row_indices[row] = row;
-            dipole_positions[row] = res.position;
-            dipole_directions[row] = res.direction;
-            dipole_scales[row] = res.scale;
-            dipole_rmse[row] = res.rmse;
-            dipole_status[row] = res.converged ? 1 : 0;
-            dipole_time_ms[row] = elapsed_ms;
+            if (angle > 1e-10) {
+                Eigen::Vector3d axis = rot_vec.normalized();
 
-            if (res.converged) dipole_converged++;
+                // Rodrigues rotation formula
+                Eigen::Vector3d u_init = u_ref * std::cos(angle)
+                    + axis.cross(u_ref) * std::sin(angle)
+                    + axis * (axis.dot(u_ref)) * (1.0 - std::cos(angle));
+                u_init.normalize();
 
-            Eigen::Vector3d pos_err = res.position - p_ref;
-            dipole_pos_errors[row] = pos_err.norm();
+                std::vector<Eigen::Vector3d> sens_cal, B_cal;
+                apply_calibration(obs_data.sensor_positions[row], obs_data.B_measured[row],
+                    cal_data, sens_cal, B_cal);
 
-            double dot = u_ref.dot(res.direction);
-            if (dot > 1.0) dot = 1.0;
-            if (dot < -1.0) dot = -1.0;
-            dipole_dir_errors[row] = std::acos(dot) * 180.0 / M_PI;
+                PoseResult res = optimizer.estimate_pose(sens_cal, B_cal, p_init, u_init, 1.0);
+
+                auto row_end = std::chrono::high_resolution_clock::now();
+                double elapsed_ms = std::chrono::duration<double, std::milli>(row_end - row_start).count();
+
+                dipole_row_indices[row] = row;
+                dipole_positions[row] = res.position;
+                dipole_directions[row] = res.direction;
+                dipole_scales[row] = res.scale;
+                dipole_rmse[row] = res.rmse;
+                dipole_status[row] = res.converged ? 1 : 0;
+                dipole_time_ms[row] = elapsed_ms;
+
+                if (res.converged) dipole_converged++;
+
+                Eigen::Vector3d pos_err = res.position - p_ref;
+                dipole_pos_errors[row] = pos_err.norm();
+
+                double dot = u_ref.dot(res.direction);
+                if (dot > 1.0) dot = 1.0;
+                if (dot < -1.0) dot = -1.0;
+                dipole_dir_errors[row] = std::acos(dot) * 180.0 / M_PI;
+            }
+            else {
+                // Fallback
+                std::vector<Eigen::Vector3d> sens_cal, B_cal;
+                apply_calibration(obs_data.sensor_positions[row], obs_data.B_measured[row],
+                    cal_data, sens_cal, B_cal);
+
+                PoseResult res = optimizer.estimate_pose(sens_cal, B_cal, p_init, u_ref, 1.0);
+
+                auto row_end = std::chrono::high_resolution_clock::now();
+                double elapsed_ms = std::chrono::duration<double, std::milli>(row_end - row_start).count();
+
+                dipole_row_indices[row] = row;
+                dipole_positions[row] = res.position;
+                dipole_directions[row] = res.direction;
+                dipole_scales[row] = res.scale;
+                dipole_rmse[row] = res.rmse;
+                dipole_status[row] = res.converged ? 1 : 0;
+                dipole_time_ms[row] = elapsed_ms;
+
+                if (res.converged) dipole_converged++;
+
+                Eigen::Vector3d pos_err = res.position - p_ref;
+                dipole_pos_errors[row] = pos_err.norm();
+
+                double dot = u_ref.dot(res.direction);
+                if (dot > 1.0) dot = 1.0;
+                if (dot < -1.0) dot = -1.0;
+                dipole_dir_errors[row] = std::acos(dot) * 180.0 / M_PI;
+            }
         }
     }
 
@@ -270,13 +433,13 @@ int main() {
         dipole_rmse, dipole_status, dipole_pos_errors, dipole_dir_errors, dipole_time_ms);
 
     // =================================================================
-    // SUMMARY / 总结
+    // SUMMARY
     // =================================================================
     std::cout << "\n============================================" << std::endl;
     std::cout << "  COMPARISON SUMMARY" << std::endl;
     std::cout << "============================================\n" << std::endl;
 
-    // Compute statistics / 计算统计数据
+    // Compute statistics
     double biot_mean_pos = 0.0, biot_mean_dir = 0.0, biot_max_pos = 0.0, biot_max_dir = 0.0;
     double biot_mean_rmse = 0.0, biot_mean_time = 0.0;
     for (int i = 0; i < total_rows; ++i) {
@@ -313,43 +476,47 @@ int main() {
     std::cout << "  Time: " << biot_duration.count() << " s, Avg: "
         << std::setprecision(2) << biot_mean_time << " ms" << std::endl;
     std::cout << "  RMSE: " << std::scientific << std::setprecision(2) << biot_mean_rmse
-        << " T (" << (biot_mean_rmse * 1e6) << " µT)" << std::endl;
-    std::cout << "  Position: mean=" << std::fixed << std::setprecision(1) << biot_mean_pos * 1000
+        << " T (" << std::fixed << std::setprecision(2) << biot_mean_rmse * 1e6 << " µT)" << std::endl;
+    std::cout << "  Position: mean=" << std::setprecision(1) << biot_mean_pos * 1000
         << " mm, max=" << biot_max_pos * 1000 << " mm" << std::endl;
-    std::cout << "  Direction: mean=" << biot_mean_dir << " deg, max=" << biot_max_dir << " deg\n" << std::endl;
+    std::cout << "  Direction: mean=" << std::setprecision(1) << biot_mean_dir
+        << " deg, max=" << biot_max_dir << " deg" << std::endl;
 
-    std::cout << "DIPOLE:" << std::endl;
+    std::cout << "\nDIPOLE:" << std::endl;
     std::cout << "  Converged: " << dipole_converged << "/" << total_rows
         << " (" << std::fixed << std::setprecision(1) << (100.0 * dipole_converged / total_rows) << "%)" << std::endl;
     std::cout << "  Time: " << dipole_duration.count() << " s, Avg: "
         << std::setprecision(2) << dipole_mean_time << " ms" << std::endl;
     std::cout << "  RMSE: " << std::scientific << std::setprecision(2) << dipole_mean_rmse
-        << " T (" << (dipole_mean_rmse * 1e6) << " µT)" << std::endl;
-    std::cout << "  Position: mean=" << std::fixed << std::setprecision(1) << dipole_mean_pos * 1000
+        << " T (" << std::fixed << std::setprecision(2) << dipole_mean_rmse * 1e6 << " µT)" << std::endl;
+    std::cout << "  Position: mean=" << std::setprecision(1) << dipole_mean_pos * 1000
         << " mm, max=" << dipole_max_pos * 1000 << " mm" << std::endl;
-    std::cout << "  Direction: mean=" << dipole_mean_dir << " deg, max=" << dipole_max_dir << " deg\n" << std::endl;
+    std::cout << "  Direction: mean=" << std::setprecision(1) << dipole_mean_dir
+        << " deg, max=" << dipole_max_dir << " deg" << std::endl;
 
-    std::cout << "SPEEDUP: Dipole is " << std::setprecision(1) << (biot_mean_time / dipole_mean_time) << "x faster" << std::endl;
+    // Calculate throughput (Hz)
+    double biot_throughput = 1000.0 / biot_mean_time;
+    double dipole_throughput = 1000.0 / dipole_mean_time;
+
+    std::cout << "\n============================================" << std::endl;
+    std::cout << "  REAL-TIME PERFORMANCE" << std::endl;
     std::cout << "============================================" << std::endl;
-
-    // Save text summary / 保存文本摘要
-    std::ofstream summary("results/model_comparison_summary.txt");
-    if (summary.is_open()) {
-        summary << "Model Comparison Summary (Earth Calibration)\n";
-        summary << "=============================================\n\n";
-        summary << "BIOT-SAVART:\n  Converged: " << biot_converged << "/" << total_rows << "\n";
-        summary << "  Time: " << biot_duration.count() << " s\n  Avg time: " << biot_mean_time << " ms\n";
-        summary << "  RMSE: " << biot_mean_rmse << " T (" << (biot_mean_rmse * 1e6) << " µT)\n";
-        summary << "  Position: " << biot_mean_pos * 1000 << " mm (max " << biot_max_pos * 1000 << " mm)\n";
-        summary << "  Direction: " << biot_mean_dir << " deg (max " << biot_max_dir << " deg)\n\n";
-        summary << "DIPOLE:\n  Converged: " << dipole_converged << "/" << total_rows << "\n";
-        summary << "  Time: " << dipole_duration.count() << " s\n  Avg time: " << dipole_mean_time << " ms\n";
-        summary << "  RMSE: " << dipole_mean_rmse << " T (" << (dipole_mean_rmse * 1e6) << " µT)\n";
-        summary << "  Position: " << dipole_mean_pos * 1000 << " mm (max " << dipole_max_pos * 1000 << " mm)\n";
-        summary << "  Direction: " << dipole_mean_dir << " deg (max " << dipole_max_dir << " deg)\n\n";
-        summary << "SPEEDUP: " << (biot_mean_time / dipole_mean_time) << "x\n";
-        summary.close();
+    std::cout << "BIOT-SAVART: " << std::fixed << std::setprecision(1) << biot_throughput << " Hz";
+    if (biot_throughput >= 50.0) {
+        std::cout << " ✓ (meets >50Hz requirement)" << std::endl;
+    }
+    else {
+        std::cout << " ✗ (below 50Hz requirement)" << std::endl;
     }
 
+    std::cout << "DIPOLE:      " << std::setprecision(1) << dipole_throughput << " Hz";
+    if (dipole_throughput >= 50.0) {
+        std::cout << " ✓ (meets >50Hz requirement)" << std::endl;
+    }
+    else {
+        std::cout << " ✗ (below 50Hz requirement)" << std::endl;
+    }
+
+    std::cout << "\n[OK] Comparison complete!" << std::endl;
     return 0;
 }

@@ -1,4 +1,4 @@
-﻿// pose_optimizer_generic.cpp
+// pose_optimizer_generic.cpp
 #include "pose_optimizer_generic.hpp"
 #include "config.hpp"
 #include <cmath>
@@ -65,9 +65,9 @@ namespace generic {
         int converged_count = 0;
 
         // Define practical convergence constants / 定义实用收敛常数
-        const double practical_tolerance = 1.0e-6;
-        const double minimal_rmse_for_minimal_improvement_check = 1.0e-6;
-        const double min_improvement_rate = 5e-4;
+        const double practical_tolerance = 5.0e-5;
+        const double minimal_rmse_for_minimal_improvement_check = 8.0e-5;
+        const double min_improvement_rate = 1e-3;
 
         // Main optimization loop / 主优化循环
         for (int iter = 0; iter < max_iterations_; ++iter) {

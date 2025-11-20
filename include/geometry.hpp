@@ -13,7 +13,7 @@ namespace biot {
         double R;   // Radius [m] / 半径
         double L;   // Length [m] / 长度
 
-        CylinderGeom(double br = 1.2, double r = 0.004, double L = 0.005)
+        CylinderGeom(double br = 1.35, double r = 0.004, double L = 0.005)
             : Br(br), R(r), L(L) {
         }
     };
@@ -25,5 +25,6 @@ namespace biot {
 
         DiscGrid(int nr = 16, int nth = 48) : Nr(nr), Nth(nth) {}
     };
+
 
 } // namespace biot

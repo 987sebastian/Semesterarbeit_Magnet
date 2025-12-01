@@ -1,0 +1,54 @@
+================================================================================
+STATISTICAL COMPARISON: Biot-Savart vs Dipole Model
+================================================================================
+
+Sample size: 648 paired observations
+
+POSITION ERROR ANALYSIS
+--------------------------------------------------------------------------------
+Biot-Savart:  7.83 ± 3.16 mm
+Dipole:       7.93 ± 3.36 mm
+Difference:   -0.10 mm (Biot - Dipole)
+
+Paired t-test results:
+  t-statistic = -0.559
+  p-value     = 0.576376
+  Cohen's d   = -0.022
+
+  Result: NO significant difference (p >= 0.05)
+
+  Effect size: negligible
+
+DIRECTION ERROR ANALYSIS
+--------------------------------------------------------------------------------
+Biot-Savart:  1.20 ± 0.78 deg
+Dipole:       1.20 ± 0.80 deg
+Difference:   -0.00 deg (Biot - Dipole)
+
+Paired t-test results:
+  t-statistic = -0.011
+  p-value     = 0.991580
+  Cohen's d   = -0.000
+
+  Result: NO significant difference (p >= 0.05)
+
+  Effect size: negligible
+
+================================================================================
+INTERPRETATION GUIDE
+================================================================================
+Statistical Significance (p-value):
+  p < 0.001: Highly significant (***)
+  p < 0.01:  Very significant (**)
+  p < 0.05:  Significant (*)
+  p >= 0.05: Not significant
+
+Effect Size (Cohen's d):
+  |d| < 0.2:  Negligible
+  0.2 <= |d| < 0.5: Small
+  0.5 <= |d| < 0.8: Medium
+  |d| >= 0.8: Large
+
+NOTE: Statistical significance ≠ Practical significance
+Consider both p-value and effect size when interpreting results.
+================================================================================

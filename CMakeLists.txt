@@ -118,7 +118,7 @@ endif()
 # ============================================================================
 
 set(MODEL_ACCURACY_TEST_SOURCES
-    test_model_accuracy.cpp
+    
     src/biot_field.cpp
     src/dipole_field.cpp
 )
@@ -146,6 +146,24 @@ set(BENCHMARK_PARALLEL_SOURCES
 )
 
 add_executable(benchmark_parallel ${BENCHMARK_PARALLEL_SOURCES})
+
+set(DIAGNOSE_RMSE_SOURCES
+    
+    src/biot_field.cpp
+    src/dipole_field.cpp
+    src/io_utils.cpp
+)
+
+add_executable(diagnose_rmse ${DIAGNOSE_RMSE_SOURCES})
+
+target_include_directories(diagnose_rmse PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${EIGEN3_INCLUDE_DIR}
+)
+
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(diagnose_rmse PRIVATE OpenMP::OpenMP_CXX)
+endif()
 
 target_include_directories(benchmark_parallel PRIVATE
     ${CMAKE_SOURCE_DIR}/include

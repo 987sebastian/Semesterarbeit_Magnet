@@ -96,7 +96,7 @@ namespace generic {
             }
 
             // Tighter practical convergence (Status 1: 2 consecutive) / 严格实用收敛判断
-            if (rmse < practical_tolerance) {
+            if (rmse < 5.0e-6) {
                 converged_count++;
                 if (converged_count >= 2) {
                     result.converged = true;
@@ -224,5 +224,6 @@ namespace generic {
             u_est.dot(u_ref) / (u_est.norm() * u_ref.norm())));
         return std::acos(cos_angle) * 180.0 / M_PI;
     }
+
 
 } // namespace generic

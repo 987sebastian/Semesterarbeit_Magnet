@@ -59,13 +59,12 @@ echo.
 echo Executable locations:
 echo   - build\Release\biot_tracking.exe
 echo   - build\Release\model_comparison.exe
-echo   - build\Release\test_model_accuracy.exe
 echo.
 echo To run programs:
 echo   1. run.bat                   (Biot-Savart tracking)
 echo   2. run_comparision.bat       (Model comparison)
-echo   3. run_test_accuracy.bat     (Theoretical test)
 echo.
 
 cd ..
+
 pause

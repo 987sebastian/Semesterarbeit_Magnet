@@ -37,14 +37,6 @@ namespace adapters {
             // This replaces the slow 1-call numerical gradient
             jacobian.block<3, 1>(i * 3, 6) = results[i].dB_dscale;
         }
-
-        // --- 原始的数值梯度计算代码块已被移除 ---
-        /*
-        const double eps = 1e-7;
-        for (int j = 0; j < 3; ++j) { ... (3 calls to model_.compute_B_batch) ... }
-        double scale_plus = scale + eps;
-        auto B_scale = model_.compute_B_batch(sensors, center, u_norm, scale_plus); ... (1 call) ...
-        */
     }
 
     void DipoleAdapter::compute_fields_with_gradients(
@@ -79,5 +71,6 @@ namespace adapters {
             jacobian.block<3, 1>(i * 3, 6) = results[i].dB_dm;
         }
     }
+
 
 } // namespace adapters

@@ -21,8 +21,8 @@ namespace biot {
 
         // Balanced mesh for speed and accuracy / 平衡网格，兼顾速度和精度
         namespace mesh {
-            const int NR = 18;
-            const int NTH = 54;
+            const int NR = 16;
+            const int NTH = 48;
         }
 
         namespace optimizer {
@@ -65,5 +65,6 @@ namespace biot {
             const int CHUNK_SIZE = 4;
         }
     }
+
 
 }

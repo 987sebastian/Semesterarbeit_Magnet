@@ -26,7 +26,7 @@ namespace biot {
         }
 
         namespace optimizer {
-            const int MAX_ITERATIONS = 10;
+            const int MAX_ITERATIONS = 8;
 
             // Keep theoretical target but use practical convergence in code
             // 保持理论目标但在代码中使用实际收敛性
@@ -68,3 +68,4 @@ namespace biot {
 
 
 }
+

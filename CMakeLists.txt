@@ -114,28 +114,7 @@ if(OpenMP_CXX_FOUND)
 endif()
 
 # ============================================================================
-# Executable 3: Model Theoretical Accuracy Test (No Calibration)
-# ============================================================================
-
-set(MODEL_ACCURACY_TEST_SOURCES
-    
-    src/biot_field.cpp
-    src/dipole_field.cpp
-)
-
-add_executable(test_model_accuracy ${MODEL_ACCURACY_TEST_SOURCES})
-
-target_include_directories(test_model_accuracy PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${EIGEN3_INCLUDE_DIR}
-)
-
-if(OpenMP_CXX_FOUND)
-    target_link_libraries(test_model_accuracy PRIVATE OpenMP::OpenMP_CXX)
-endif()
-
-# ============================================================================
-# Executable 4: Multi-Core Performance Benchmark
+# Executable 3: Multi-Core Performance Benchmark
 # ============================================================================
 
 set(BENCHMARK_PARALLEL_SOURCES
@@ -147,24 +126,6 @@ set(BENCHMARK_PARALLEL_SOURCES
 
 add_executable(benchmark_parallel ${BENCHMARK_PARALLEL_SOURCES})
 
-set(DIAGNOSE_RMSE_SOURCES
-    
-    src/biot_field.cpp
-    src/dipole_field.cpp
-    src/io_utils.cpp
-)
-
-add_executable(diagnose_rmse ${DIAGNOSE_RMSE_SOURCES})
-
-target_include_directories(diagnose_rmse PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${EIGEN3_INCLUDE_DIR}
-)
-
-if(OpenMP_CXX_FOUND)
-    target_link_libraries(diagnose_rmse PRIVATE OpenMP::OpenMP_CXX)
-endif()
-
 target_include_directories(benchmark_parallel PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${EIGEN3_INCLUDE_DIR}
@@ -173,13 +134,6 @@ target_include_directories(benchmark_parallel PRIVATE
 if(OpenMP_CXX_FOUND)
     target_link_libraries(benchmark_parallel PRIVATE OpenMP::OpenMP_CXX)
 endif()
-
-# ============================================================================
-# Installation
-# ============================================================================
-
-install(TARGETS biot_tracking model_comparison test_model_accuracy benchmark_parallel
-        RUNTIME DESTINATION bin)
 
 # ============================================================================
 # Configuration Summary
@@ -209,7 +163,6 @@ message(STATUS "")
 message(STATUS "  Executables to build:")
 message(STATUS "    - biot_tracking")
 message(STATUS "    - model_comparison")
-message(STATUS "    - test_model_accuracy")
 message(STATUS "    - benchmark_parallel (NEW)")
 message(STATUS "========================================")
 message(STATUS "")

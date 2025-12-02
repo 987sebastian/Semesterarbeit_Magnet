@@ -172,9 +172,9 @@ namespace biot {
             }
 
             // Tighter practical convergence
-            const double practical_tolerance = 5.0e-6;
+            const double practical_tolerance = 2.5e-5;
 
-            if (rmse < practical_tolerance) {
+            if (rmse < 5.0e-6) {
                 converged_count++;
                 if (converged_count >= 2) {  // 2 consecutive iterations
                     result.converged = true;
@@ -311,5 +311,6 @@ namespace biot {
         cos_angle = std::max(-1.0, std::min(1.0, cos_angle));
         return std::acos(cos_angle) * 180.0 / M_PI;
     }
+
 
 } // namespace biot

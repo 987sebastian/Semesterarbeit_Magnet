@@ -1,0 +1,685 @@
+"""
+Magnet tracking with Biot–Savart surface-charge model and analytic Jacobian.
+基于表面磁荷的Biot–Savart模型，提供解析雅可比。方向由单位向量 u 表示。
+"""
+
+from __future__ import annotations
+import numpy as np
+from dataclasses import dataclass
+from typing import Tuple, List, Optional
+import warnings
+
+MU0 = 4*np.pi*1e-7  # vacuum permeability / 真空磁导率
+
+# -------------------- Geometry and discretization / 几何与离散 --------------------
+@dataclass
+class CylinderGeom:
+    """Cylindrical magnet geometry parameters / 圆柱形磁体几何参数"""
+    Br: float  # remanence [T] / 剩磁
+    R: float   # radius [m] / 半径
+    L: float   # length [m] / 长度
+    
+    def __post_init__(self):
+        """Validate parameter validity / 验证参数合法性"""
+        if self.Br <= 0:
+            raise ValueError(f"Remanence must be positive, got {self.Br}")
+        if self.R <= 0:
+            raise ValueError(f"Radius must be positive, got {self.R}")
+        if self.L <= 0:
+            raise ValueError(f"Length must be positive, got {self.L}")
+    
+    def magnetization(self, scale: float = 1.0) -> float:
+        """Return magnetization M = Br/μ₀ * scale / 返回磁化强度"""
+        return self.Br / MU0 * scale
+    
+    def volume(self) -> float:
+        """Return magnet volume / 返回磁体体积"""
+        return np.pi * self.R**2 * self.L
+
+@dataclass
+class DiscGrid:
+    """Disc grid discretization parameters / 圆盘网格离散化参数"""
+    Nr: int = 16      # radial divisions / 径向剖分
+    Nth: int = 48     # angular divisions / 角向剖分
+    
+    def __post_init__(self):
+        if self.Nr < 2:
+            raise ValueError(f"Nr must be >= 2, got {self.Nr}")
+        if self.Nth < 4:
+            raise ValueError(f"Nth must be >= 4, got {self.Nth}")
+    
+    def total_points(self) -> int:
+        """Return total number of grid points / 返回总网格点数"""
+        return self.Nr * self.Nth
+
+@dataclass
+class Discretization:
+    disc: DiscGrid = None
+    def __post_init__(self):
+        if self.disc is None:
+            self.disc = DiscGrid()
+
+# Precomputed local mesh for the two end disks / 两端圆盘的本地网格
+class EndDisks:
+    """Precomputed mesh structure for end disks / 预计算端面圆盘的网格结构"""
+    def __init__(self, geom: CylinderGeom, disc: DiscGrid):
+        self.geom = geom
+        self.disc = disc
+        self._build()
+
+    def _build(self):
+        """Build polar coordinate grid / 构建极坐标网格"""
+        R = self.geom.R
+        L = self.geom.L
+        Nr, Nth = self.disc.Nr, self.disc.Nth
+        
+        # Polar cell centers and areas / 极坐标单元中心与面积
+        r_edges = np.linspace(0.0, R, Nr+1)
+        th_edges = np.linspace(0.0, 2*np.pi, Nth+1)
+        rc = 0.5*(r_edges[:-1] + r_edges[1:])
+        thc = 0.5*(th_edges[:-1] + th_edges[1:])
+        dr = np.diff(r_edges)[:,None]
+        dth = np.diff(th_edges)[None,:]
+        
+        # Cell area in polar: dS = r dr dθ / 单元面积
+        area = (rc[:,None] * dr) @ (np.ones((1,Nth))) * dth
+        
+        # Centers in Cartesian local frame / 局部笛卡尔坐标的圆盘网格点
+        x = (rc[:,None] * np.cos(thc)[None,:]).reshape(-1)
+        y = (rc[:,None] * np.sin(thc)[None,:]).reshape(-1)
+        dS = area.reshape(-1)
+        
+        # Two disks at z = ±L/2 / 两端圆盘位于 z = ±L/2
+        z_plus = np.full_like(x, +L/2)
+        z_minus = np.full_like(x, -L/2)
+        
+        # Stack: (Npts,3) for each end / 每端的点坐标堆叠
+        self.p_local_plus = np.stack([x, y, z_plus], axis=1)
+        self.p_local_minus = np.stack([x, y, z_minus], axis=1)
+        self.dS = dS
+        self.Npts = dS.size
+        
+        # Local normals / 局部法向量
+        self.n_local_plus = np.tile(np.array([0.0, 0.0, 1.0]), (self.Npts, 1))
+        self.n_local_minus= np.tile(np.array([0.0, 0.0, -1.0]), (self.Npts, 1))
+        
+        # Surface magnetic charge densities at ends: ±M / 端面磁荷密度：σ_m = M·n = ±M
+        self.sigma_sign_plus = +1.0
+        self.sigma_sign_minus= -1.0
+
+# -------------------- Orientation frame utilities / 方向正交基工具 --------------------
+def sph_basis_from_u(u_hat: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
+    """
+    Build an orthonormal frame (e_phi, -e_theta, u_hat), plus spherical angles (alpha, beta).
+    用单位方向向量构造正交基，并返回球坐标角 α(极角), β(方位角)。
+    
+    Args:
+        u_hat: (3,) unit direction vector / 单位方向向量
+        
+    Returns:
+        e_phi, -e_theta, u_hat, alpha, beta
+    """
+    ux, uy, uz = u_hat
+    
+    # Angles from unit vector / 由单位向量求角度
+    alpha = np.arccos(np.clip(uz, -1.0, 1.0))  # polar angle from +z / 与+z轴的极角
+    beta = np.arctan2(uy, ux)                  # azimuth angle / 方位角
+    
+    # Spherical basis vectors / 球坐标基向量
+    e_r = u_hat
+    e_theta = np.array([np.cos(alpha)*np.cos(beta),
+                        np.cos(alpha)*np.sin(beta),
+                        -np.sin(alpha)])
+    e_phi = np.array([-np.sin(beta), np.cos(beta), 0.0])
+    
+    # Orthonormal frame for disk local xyz -> world / 将磁体局部xyz映射到世界坐标系
+    # R = [e1 e2 e3] with e1=e_phi, e2=-e_theta, e3=e_r
+    return e_phi, -e_theta, e_r, alpha, beta
+
+def d_basis_dalpha(alpha: float, beta: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Derivatives of (e1,e2,e3) with respect to alpha. / 正交基对α的导数
+    
+    Args:
+        alpha: polar angle / 极角
+        beta: azimuth angle / 方位角
+        
+    Returns:
+        de1_dalpha, de2_dalpha, de3_dalpha
+    """
+    # From spherical basis derivatives / 基于球坐标基的导数
+    e_r = np.array([np.sin(alpha)*np.cos(beta),
+                    np.sin(alpha)*np.sin(beta),
+                    np.cos(alpha)])
+    e_theta = np.array([np.cos(alpha)*np.cos(beta),
+                        np.cos(alpha)*np.sin(beta),
+                        -np.sin(alpha)])
+    e_phi = np.array([-np.sin(beta), np.cos(beta), 0.0])
+    
+    # Derivatives / 导数计算
+    de_r_dalpha = e_theta
+    de_theta_dalpha = -e_r
+    de_phi_dalpha = np.array([0.0, 0.0, 0.0])
+    
+    # Map to (e1,e2,e3) = (e_phi, -e_theta, e_r) / 映射到实际使用的正交基
+    de1 = de_phi_dalpha
+    de2 = -de_theta_dalpha
+    de3 = de_r_dalpha
+    return de1, de2, de3
+
+def d_basis_dbeta(alpha: float, beta: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Derivatives of (e1,e2,e3) with respect to beta. / 正交基对β的导数
+    
+    Args:
+        alpha: polar angle / 极角
+        beta: azimuth angle / 方位角
+        
+    Returns:
+        de1_dbeta, de2_dbeta, de3_dbeta
+    """
+    e_r = np.array([np.sin(alpha)*np.cos(beta),
+                    np.sin(alpha)*np.sin(beta),
+                    np.cos(alpha)])
+    e_theta = np.array([np.cos(alpha)*np.cos(beta),
+                        np.cos(alpha)*np.sin(beta),
+                        -np.sin(alpha)])
+    e_phi = np.array([-np.sin(beta), np.cos(beta), 0.0])
+    
+    # Derivatives / 导数计算
+    de_r_dbeta = np.sin(alpha)*e_phi
+    de_theta_dbeta = np.cos(alpha)*e_phi
+    de_phi_dbeta = -np.sin(alpha)*e_r - np.cos(alpha)*e_theta
+    
+    # Map to (e1,e2,e3) / 映射到实际使用的正交基
+    de1 = de_phi_dbeta
+    de2 = -de_theta_dbeta
+    de3 = de_r_dbeta
+    return de1, de2, de3
+
+def uhat_and_chain(u_raw: np.ndarray) -> Tuple[np.ndarray, float, float, np.ndarray, np.ndarray]:
+    """
+    Normalize u_raw to u_hat and return alpha, beta and Jacobians dα/du_raw, dβ/du_raw.
+    将原始方向向量归一化，并给出 α,β 以及对 u_raw 的链式导数。
+    
+    Args:
+        u_raw: (3,) raw direction vector (unnormalized) / 原始方向向量（未归一化）
+        
+    Returns:
+        u_hat: (3,) unit direction vector / 单位方向向量
+        alpha: polar angle / 极角
+        beta: azimuth angle / 方位角
+        dalpha_duraw: (3,) Jacobian ∂α/∂u_raw
+        dbeta_duraw: (3,) Jacobian ∂β/∂u_raw
+    """
+    nr = np.linalg.norm(u_raw)
+    if nr < 1e-12:
+        raise ValueError("u vector too small / 方向向量范数过小")
+    u_hat = u_raw / nr
+    ux, uy, uz = u_hat
+    
+    alpha = np.arccos(np.clip(uz, -1.0, 1.0))
+    beta = np.arctan2(uy, ux)
+    
+    # Jacobian: d u_hat / d u_raw = (I - u_hat u_hat^T)/||u_raw|| / 归一化的雅可比
+    I = np.eye(3)
+    d_uhat_duraw = (I - np.outer(u_hat, u_hat))/nr
+    
+    # ∂α/∂u_hat = -1/sin(α) * ∂uz/∂u_hat = [0,0,-1]/sin(α)
+    sa = max(np.sin(alpha), 1e-12)  # avoid division by zero / 避免除零
+    dalpha_duhat = np.array([0.0, 0.0, -1.0]) / sa
+    
+    # ∂β/∂u_hat = 1/sin²(α) * [ -uy, ux, 0 ]
+    s2 = max(sa*sa, 1e-12)
+    dbeta_duhat = np.array([-uy, ux, 0.0]) / s2
+    
+    # Chain rule to u_raw / 链式法则到原始向量
+    dalpha_duraw = dalpha_duhat @ d_uhat_duraw
+    dbeta_duraw = dbeta_duhat @ d_uhat_duraw
+    
+    return u_hat, alpha, beta, dalpha_duraw, dbeta_duraw
+
+# Kernel function and its Jacobian with respect to r / 核函数及对r的雅可比
+def kernel_and_J(r: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Biot-Savart kernel: f(r) = r / |r|^3 and its Jacobian.
+    Biot-Savart核函数及其雅可比矩阵。
+    
+    Args:
+        r: (3,) position vector / 位置向量
+        
+    Returns:
+        f: (3,) kernel value f(r) = r/|r|³ / 核函数值
+        J: (3,3) Jacobian df/dr = (I|r|² - 3rrᵀ)/|r|⁵ / 雅可比矩阵
+    """
+    rx, ry, rz = r
+    r2 = rx*rx + ry*ry + rz*rz
+    r2_safe = max(r2, 1e-30)  # avoid division by zero / 避免除零
+    inv_r = 1.0/np.sqrt(r2_safe)
+    inv_r3 = inv_r**3
+    f = r * inv_r3
+    
+    # Jacobian matrix / 雅可比矩阵
+    I = np.eye(3)
+    rrT = np.outer(r, r)
+    J = (I * r2_safe - 3.0 * rrT) * (inv_r**5)
+    return f, J
+
+# -------------------- Forward model / 正演模型 --------------------
+@dataclass
+class ModelConfig:
+    """Model configuration / 模型配置"""
+    geom: CylinderGeom
+    disc: Discretization
+
+class ForwardModel:
+    """
+    Magnetic field at sensors from a uniformly magnetized cylinder using surface charges on end disks.
+    采用端面表面磁荷的模型计算传感器处磁感应强度。
+    
+    The model uses the surface magnetic charge distribution on the two end disks:
+    模型采用两端圆盘的表面磁荷分布：
+        σ_m = ±M·n = ±(Br/μ₀)·scale
+    and integrates using Biot-Savart law:
+    并使用Biot-Savart定律积分：
+        B = (μ₀/4π) ∫ σ_m dS · r/|r|³
+    """
+    def __init__(self, cfg: ModelConfig):
+        self.cfg = cfg
+        self.mesh = EndDisks(cfg.geom, cfg.disc.disc)
+        self.M0 = cfg.geom.Br / MU0  # nominal magnetization / 标称磁化强度
+
+    def compute_B_and_J(self,
+                        sensors_m: np.ndarray,
+                        center_m: np.ndarray,
+                        u_raw: np.ndarray,
+                        scale: float) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute B field and analytic Jacobian with respect to parameters.
+        计算B场及其对参数的解析雅可比矩阵。
+        
+        Args:
+            sensors_m: (N,3) sensor positions [m] / 传感器位置
+            center_m: (3,) magnet center [m] / 磁体中心
+            u_raw: (3,) direction vector (unnormalized) / 方向向量（未归一化）
+            scale: magnetization scale factor / 磁化强度缩放因子
+            
+        Returns:
+            B: (N,3) magnetic field [T] / 磁场强度
+            J: (N,3,7) Jacobian wrt [cx,cy,cz, ux,uy,uz, scale] / 对参数的雅可比
+        """
+        # Orientation frame / 方向正交基
+        u_hat, alpha, beta, dalpha_duraw, dbeta_duraw = uhat_and_chain(u_raw)
+        e1, e2, e3, alpha, beta = sph_basis_from_u(u_hat)
+        
+        # Basis derivatives / 正交基的导数
+        de1_da, de2_da, de3_da = d_basis_dalpha(alpha, beta)
+        de1_db, de2_db, de3_db = d_basis_dbeta(alpha, beta)
+        
+        # Assemble world positions of mesh points for both ends / 组装两端网格点的世界坐标
+        R_matrix = np.stack([e1, e2, e3], axis=1)
+        P_plus  = center_m + (self.mesh.p_local_plus @ R_matrix)
+        P_minus = center_m + (self.mesh.p_local_minus @ R_matrix)
+        
+        # Surface charge densities at ends / 端面磁荷密度
+        sigma_plus  =  self.M0 * scale * self.mesh.sigma_sign_plus
+        sigma_minus =  self.M0 * scale * self.mesh.sigma_sign_minus
+        dS = self.mesh.dS
+        Npts = self.mesh.Npts
+
+        N = sensors_m.shape[0]
+        B = np.zeros((N, 3))
+        Jall = np.zeros((N, 3, 7))  # Jacobian per sensor wrt 7 params / 每个传感器对7参数的雅可比
+
+        # Helper function to accumulate contribution from one end / 处理单个端面的辅助函数
+        def acc_end(P_end: np.ndarray, p_local: np.ndarray, sigma_sign: float):
+            nonlocal B, Jall
+            for i in range(N):
+                s = sensors_m[i]
+                
+                # Initialize derivative accumulators / 初始化各导数累积器
+                JB_c = np.zeros((3, 3))    # wrt center / 对中心的导数
+                JB_da = np.zeros(3)        # wrt alpha / 对α的导数
+                JB_db = np.zeros(3)        # wrt beta / 对β的导数
+                f_scale_sum = np.zeros(3)  # for scale derivative (optimized) / 用于scale导数（优化）
+                Bi = np.zeros(3)
+                
+                for k in range(Npts):
+                    r = s - P_end[k]
+                    f, Jr = kernel_and_J(r)
+                    
+                    # Weight factor / 权重因子
+                    w = MU0/(4*np.pi) * (self.M0 * scale * sigma_sign) * dS[k]
+                    
+                    # Accumulate B field / 累加B场
+                    Bi += w * f
+                    
+                    # Center derivative: dr/dc = -I => dB/dc = -Jr * w / 中心导数
+                    JB_c += - w * Jr
+                    
+                    # Orientation derivatives: P_end depends on alpha,beta via e1,e2,e3
+                    # 方向导数：P_end通过e1,e2,e3依赖于alpha,beta
+                    xL, yL, zL = p_local[k]
+                    dP_da = de1_da*xL + de2_da*yL + de3_da*zL
+                    dP_db = de1_db*xL + de2_db*yL + de3_db*zL
+                    
+                    # dr/dα = -dP/dα ; dB/dα = Jr @ dr/dα * w
+                    JB_da += w * (Jr @ (-dP_da))
+                    JB_db += w * (Jr @ (-dP_db))
+                    
+                    # Accumulate kernel part for scale derivative (optimized: avoid recomputation)
+                    # 累加scale导数的核函数部分（优化：避免重复计算）
+                    f_scale_sum += f * dS[k]
+                
+                # Update B field / 更新B场
+                B[i] += Bi
+                
+                # Fill Jacobian blocks / 填充雅可比矩阵各块
+                Jall[i, :, 0:3] += JB_c
+                
+                # Chain rule to u_raw via α,β / 通过α,β链式法则到u_raw
+                J_u = np.outer(JB_da, dalpha_duraw) + np.outer(JB_db, dbeta_duraw)
+                Jall[i, :, 3:6] += J_u
+                
+                # Scale derivative (optimized: use precomputed f_scale_sum)
+                # Scale导数（优化：使用预计算的f_scale_sum）
+                Jall[i, :, 6] += (sigma_sign * MU0/(4*np.pi) * self.M0) * f_scale_sum
+
+        # Process both end disks / 处理两个端面
+        acc_end(P_plus, self.mesh.p_local_plus, +1.0)
+        acc_end(P_minus, self.mesh.p_local_minus, -1.0)
+        
+        return B, Jall
+
+# -------------------- Sensors IO / 传感器输入输出 --------------------
+def load_sensors_from_csv(path: str) -> np.ndarray:
+    """
+    Load sensor positions from CSV file with columns x,y,z in meters.
+    从CSV文件加载传感器位置，要求包含x,y,z列（单位：米）。
+    
+    Args:
+        path: path to CSV file / CSV文件路径
+        
+    Returns:
+        (N,3) array of sensor positions / 传感器位置数组
+    """
+    import pandas as pd
+    df = pd.read_csv(path)
+    if not all(col in df.columns for col in ['x', 'y', 'z']):
+        raise ValueError("CSV must contain columns: x, y, z")
+    return df[['x', 'y', 'z']].to_numpy(dtype=float)
+
+def sensors_from_list(lst: List[Tuple[float, float, float]]) -> np.ndarray:
+    """
+    Create sensor array from list of tuples.
+    从元组列表创建传感器位置数组。
+    
+    Args:
+        lst: list of (x,y,z) tuples / (x,y,z)元组列表
+        
+    Returns:
+        (N,3) array of sensor positions / 传感器位置数组
+    """
+    return np.array(lst, dtype=float)
+
+# -------------------- Gauss-Newton pose estimation / 高斯-牛顿位姿估计 --------------------
+@dataclass
+class Pose:
+    """
+    Magnet pose estimation result / 磁体位姿估计结果
+    """
+    center: np.ndarray    # (3,) center position [m] / 中心位置
+    u_dir: np.ndarray     # (3,) unit direction vector / 单位方向向量
+    scale: float          # magnetization scale / 磁化强度缩放
+    rmse: float           # root mean square error [T] / 均方根误差
+    iterations: int       # number of iterations used / 使用的迭代次数
+    converged: bool       # whether converged / 是否收敛
+
+    def __str__(self):
+        return (f"Pose:\n"
+                f"  center: [{self.center[0]:.6f}, {self.center[1]:.6f}, {self.center[2]:.6f}] m\n"
+                f"  direction: [{self.u_dir[0]:.6f}, {self.u_dir[1]:.6f}, {self.u_dir[2]:.6f}]\n"
+                f"  scale: {self.scale:.6f}\n"
+                f"  RMSE: {self.rmse:.3e} T\n"
+                f"  iterations: {self.iterations}\n"
+                f"  converged: {self.converged}")
+
+def estimate_pose(
+    sensors_m: np.ndarray,
+    B_meas_T: np.ndarray,
+    geom: CylinderGeom,
+    u_init: np.ndarray,
+    c_init: np.ndarray,
+    scale_init: float = 1.0,
+    max_iter: int = 15,
+    tol_T: float = 4e-8,
+    verbose: bool = False
+) -> Pose:
+    """
+    Estimate magnet pose using Gauss-Newton method with analytic Jacobian.
+    使用解析雅可比的高斯-牛顿法估计磁体位姿。
+    
+    Args:
+        sensors_m: (N,3) sensor positions [m] / 传感器位置
+        B_meas_T: (N,3) measured B field [T] / 测量的磁场
+        geom: magnet geometry / 磁体几何参数
+        u_init: (3,) initial direction vector (need not be unit) / 初始方向向量（无需归一化）
+        c_init: (3,) initial center position [m] / 初始中心位置
+        scale_init: initial magnetization scale / 初始磁化强度缩放
+        max_iter: maximum iterations / 最大迭代次数
+        tol_T: convergence tolerance [T] / 收敛容差
+        verbose: print iteration info / 打印迭代信息
+        
+    Returns:
+        Pose object with estimated parameters / 包含估计参数的Pose对象
+    """
+    cfg = ModelConfig(geom=geom, disc=Discretization())
+    fwd = ForwardModel(cfg)
+
+    # Initialize parameter vector [cx, cy, cz, ux, uy, uz, scale]
+    # 初始化参数向量 [cx, cy, cz, ux, uy, uz, scale]
+    p = np.zeros(7)
+    p[0:3] = c_init
+    p[3:6] = u_init
+    p[6] = scale_init
+
+    converged = False
+    for it in range(max_iter):
+        c = p[0:3]
+        u_raw = p[3:6]
+        scale = p[6]
+        
+        # Compute prediction and Jacobian / 计算预测值和雅可比
+        B_pred, J = fwd.compute_B_and_J(sensors_m, c, u_raw, scale)  # B:(N,3), J:(N,3,7)
+        
+        # Residual / 残差
+        r = (B_pred - B_meas_T).reshape(-1)
+        rmse = float(np.sqrt(np.mean(r*r)))
+        
+        if verbose:
+            print(f"Iter {it}: RMSE = {rmse:.3e} T")
+        
+        # Check convergence / 检查收敛
+        if rmse < tol_T:
+            converged = True
+            if verbose:
+                print(f"Converged at iteration {it}")
+            break
+        
+        # Stack Jacobian matrix / 堆叠雅可比矩阵
+        Jbig = J.reshape(-1, 7)
+        
+        # Solve normal equations: H * dp = -g / 解法向方程
+        # Light regularization on u_raw for numerical stability / 对u_raw加轻微正则化以保持数值稳定性
+        lam = 1e-12
+        H = Jbig.T @ Jbig + lam * np.diag([0, 0, 0, 1, 1, 1, 0])
+        g = Jbig.T @ r
+        
+        try:
+            dp = -np.linalg.solve(H, g)
+        except np.linalg.LinAlgError:
+            warnings.warn("Singular matrix in Gauss-Newton, stopping early")
+            break
+        
+        # Update parameters / 更新参数
+        p += dp
+        
+        # Ensure scale remains positive / 确保scale保持为正
+        if p[6] < 0.1:
+            p[6] = 0.1
+
+    # Normalize direction vector / 归一化方向向量
+    u_hat = p[3:6] / np.linalg.norm(p[3:6])
+    
+    # Compute final RMSE / 计算最终RMSE
+    B_final, _ = fwd.compute_B_and_J(sensors_m, p[0:3], p[3:6], p[6])
+    r_final = (B_final - B_meas_T).reshape(-1)
+    rmse_final = float(np.sqrt(np.mean(r_final*r_final)))
+    
+    return Pose(
+        center=p[0:3].copy(),
+        u_dir=u_hat,
+        scale=float(p[6]),
+        rmse=rmse_final,
+        iterations=it+1,
+        converged=converged
+    )
+
+# -------------------- Validation utilities / 验证工具 --------------------
+def validate_jacobian(
+    fwd: ForwardModel,
+    sensors_m: np.ndarray,
+    center_m: np.ndarray,
+    u_raw: np.ndarray,
+    scale: float,
+    epsilon: float = 1e-7
+) -> dict:
+    """
+    Validate analytic Jacobian using finite differences.
+    使用有限差分验证解析雅可比的正确性。
+    
+    Args:
+        fwd: forward model / 正演模型
+        sensors_m: sensor positions / 传感器位置
+        center_m: magnet center / 磁体中心
+        u_raw: direction vector / 方向向量
+        scale: magnetization scale / 磁化强度缩放
+        epsilon: finite difference step / 有限差分步长
+        
+    Returns:
+        dict with relative errors for each parameter / 各参数的相对误差字典
+    """
+    # Compute analytic Jacobian / 计算解析雅可比
+    B0, J_analytic = fwd.compute_B_and_J(sensors_m, center_m, u_raw, scale)
+    
+    results = {}
+    param_names = ['cx', 'cy', 'cz', 'ux', 'uy', 'uz', 'scale']
+    
+    # Finite difference for each parameter / 对每个参数进行有限差分
+    for idx, name in enumerate(param_names):
+        # Construct perturbation / 构造扰动
+        if idx < 3:  # center parameters / 中心参数
+            c_pert = center_m.copy()
+            c_pert[idx] += epsilon
+            B_pert, _ = fwd.compute_B_and_J(sensors_m, c_pert, u_raw, scale)
+        elif idx < 6:  # direction parameters / 方向参数
+            u_pert = u_raw.copy()
+            u_pert[idx-3] += epsilon
+            B_pert, _ = fwd.compute_B_and_J(sensors_m, center_m, u_pert, scale)
+        else:  # scale parameter / 缩放参数
+            B_pert, _ = fwd.compute_B_and_J(sensors_m, center_m, u_raw, scale + epsilon)
+        
+        # Finite difference / 有限差分
+        J_numeric = (B_pert - B0) / epsilon
+        J_numeric_flat = J_numeric.reshape(-1)
+        J_analytic_flat = J_analytic[:, :, idx].reshape(-1)
+        
+        # Compute relative error / 计算相对误差
+        diff = np.abs(J_numeric_flat - J_analytic_flat)
+        max_val = np.maximum(np.abs(J_numeric_flat), np.abs(J_analytic_flat))
+        rel_err = np.where(max_val > 1e-15, diff / max_val, diff)
+        
+        results[name] = {
+            'max_rel_error': float(np.max(rel_err)),
+            'mean_rel_error': float(np.mean(rel_err))
+        }
+    
+    return results
+
+# -------------------- Example run / 演示程序 --------------------
+if __name__ == "__main__":
+    print("=" * 60)
+    print("Magnet Tracking Demo - Biot-Savart Surface Charge Model")
+    print("磁体跟踪演示 - Biot-Savart 表面磁荷模型")
+    print("=" * 60)
+    
+    # Correct geometry parameters / 正确的几何参数
+    geom = CylinderGeom(Br=1.35, R=0.004, L=0.005)
+    print(f"\nMagnet geometry / 磁体几何:")
+    print(f"  Remanence Br / 剩磁 = {geom.Br} T")
+    print(f"  Radius R / 半径 = {geom.R*1000:.1f} mm")
+    print(f"  Length L / 长度 = {geom.L*1000:.1f} mm")
+    print(f"  Volume V / 体积 = {geom.volume()*1e9:.3f} mm³")
+    
+    # Sensor positions / 传感器位置
+    sensors = sensors_from_list([
+        [0.03, 0.01, 0.02],
+        [0.04, 0.01, 0.02],
+        [0.05, 0.01, 0.02],
+        [0.03, 0.02, 0.03],
+        [0.04, 0.02, 0.03],
+        [0.05, 0.02, 0.03],
+    ])
+    print(f"\nNumber of sensors / 传感器数量: {sensors.shape[0]}")
+    
+    # True pose / 真实位姿
+    true_center = np.array([0.01, 0.01, 0.012])
+    true_u = np.array([0.0, 0.0, 1.0])
+    true_scale = 1.0
+    
+    print(f"\nTrue pose / 真实位姿:")
+    print(f"  Center / 中心: {true_center.tolist()}")
+    print(f"  Direction / 方向: {true_u.tolist()}")
+    print(f"  Scale / 缩放: {true_scale}")
+    
+    # Generate synthetic measurements from true pose / 用真值生成合成观测数据
+    cfg = ModelConfig(geom=geom, disc=Discretization())
+    fwd = ForwardModel(cfg)
+    B_true, _ = fwd.compute_B_and_J(sensors, true_center, true_u, true_scale)
+    
+    # Add noise / 添加噪声
+    noise_level = 1e-8  # Tesla
+    B_meas = B_true + noise_level * np.random.randn(*B_true.shape)
+    print(f"\nMeasurement noise level / 测量噪声水平: {noise_level:.2e} T")
+    print(f"B field range / B场范围: [{np.min(B_meas):.3e}, {np.max(B_meas):.3e}] T")
+    
+    # Validate Jacobian (optional) / 验证雅可比（可选）
+    print("\n--- Jacobian Validation / 雅可比验证 ---")
+    jac_errors = validate_jacobian(fwd, sensors[:2], true_center, true_u, true_scale)
+    for param, errors in jac_errors.items():
+        print(f"{param:8s}: max_rel_err = {errors['max_rel_error']:.3e}")
+    
+    # Pose estimation / 位姿估计
+    print("\n--- Pose Estimation Started / 开始位姿估计 ---")
+    est = estimate_pose(
+        sensors, B_meas, geom,
+        u_init=np.array([0.0, 0.0, 0.9]),
+        c_init=np.array([0.009, 0.010, 0.011]),
+        scale_init=0.9,
+        max_iter=12,
+        tol_T=4e-8,
+        verbose=True
+    )
+    
+    print("\n" + "=" * 60)
+    print("Estimation Results / 估计结果:")
+    print("=" * 60)
+    print(est)
+    
+    # Compute errors / 计算误差
+    print("\nEstimation Errors / 估计误差:")
+    print(f"  Center error / 中心误差: {np.linalg.norm(est.center - true_center)*1000:.4f} mm")
+    print(f"  Direction error / 方向误差: {np.arccos(np.clip(np.dot(est.u_dir, true_u), -1, 1))*180/np.pi:.4f} deg")
+    print(f"  Scale error / 缩放误差: {abs(est.scale - true_scale):.6f}")
+    
+    print("\nDone / 完成!")

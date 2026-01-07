@@ -1,0 +1,16 @@
+B field: [2.63815312e-04 1.02177174e-04 2.01620511e-05]
+||B||: 2.836286e-04
+
+=== Dipole Jacobian Verification (Unified k) ===
+
+dB/dp error (analytic vs numerical):
+  Max abs diff: 7.689e-03
+  Relative error: 5.102e-01
+
+dB/du error:
+  Max abs diff: 1.692e-13
+  Relative error: 9.362e-10
+
+dB/dk error:
+  Max abs diff: 1.817e-04
+  Relative error: 6.480e-01

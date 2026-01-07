@@ -1,0 +1,14 @@
+B field: [ 2.53683622e-04  8.26361894e-05 -3.45658711e-07]
+||B||: 2.668037e-04
+
+dB/dp error (analytic vs numerical):
+  Max abs diff: 1.013e-11
+  Relative error: 9.802e-10
+
+dB/du error:
+  Max abs diff: 2.165e-04
+  Relative error: 1.348e+00
+
+dB/dk error:
+  Max abs diff: 5.272e-12
+  Relative error: 2.698e-08

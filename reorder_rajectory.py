@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Reorder observation data to create a continuous trajectory.
 Uses nearest-neighbor algorithm to minimize frame-to-frame jumps.
@@ -229,4 +228,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()

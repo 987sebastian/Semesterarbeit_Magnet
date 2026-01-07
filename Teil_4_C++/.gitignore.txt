@@ -1,0 +1,199 @@
+# ============================================
+# C++ Project .gitignore
+# ============================================
+
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Linker files
+*.ilk
+
+# Debugger Files
+*.pdb
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Debug information files
+*.dwo
+
+# ============================================
+# Build Output Directories
+# ============================================
+build/
+cmake/
+out/
+bin/
+lib/
+*.build/
+x64/
+x86/
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+
+# ============================================
+# CMake Generated Files
+# ============================================
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+_deps/
+*.cmake.in
+compile_commands.json
+CPackConfig.cmake
+CPackSourceConfig.cmake
+
+# ============================================
+# Third-party Libraries (External Dependencies)
+# ============================================
+Eigen-master/
+external/
+third_party/
+vendor/
+deps/
+
+# ============================================
+# Python Virtual Environment
+# ============================================
+.venv/
+venv/
+env/
+ENV/
+.virtualenv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ============================================
+# IDE and Editor Configurations
+# ============================================
+
+# Visual Studio 2022
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+*.vcxproj.filters
+ipch/
+*.aps
+*.ncb
+*.opensdf
+*.sdf
+*.cachefile
+*.VC.VC.opendb
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs (CLion, IntelliJ)
+.idea/
+*.iml
+*.iws
+cmake-build-*/
+
+# ============================================
+# Git Related
+# ============================================
+.git/
+.gitattributes
+.gitmodules
+
+# ============================================
+# OS Generated Files
+# ============================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ============================================
+# Project-specific Output and Temporary Files
+# ============================================
+
+# Data files (if data files are large, consider managing separately)
+# Uncomment to ignore data directory if needed
+# data/
+
+# Result files
+results/
+*.csv
+*.log
+*.txt
+
+# Benchmark output
+benchmark_results/
+*.benchmark
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.swp
+*.swo
+*~
+
+# Documentation generated files
+docs/_build/
+docs/html/
+docs/latex/
+doxygen/
+
+# ============================================
+# Other
+# ============================================
+*.bak
+*.orig
+*.rej
+core

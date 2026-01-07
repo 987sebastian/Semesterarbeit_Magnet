@@ -1,0 +1,29 @@
+================================================================================
+MODEL COMPARISON REPORT
+Biot-Savart vs Dipole
+================================================================================
+
+BIOT-SAVART MODEL
+--------------------------------------------------------------------------------
+Total Samples:         648
+Converged Samples:     648 (100.0%)
+Mean RMSE:             22.625 uT
+Median RMSE:           22.441 uT
+Std RMSE:              0.607 uT
+Mean Position Error:   7.185 mm
+Mean Direction Error:  1.184 deg
+Mean Scale Factor:     1.000
+Mean Computation Time: 16.447 ms
+
+DIPOLE MODEL
+--------------------------------------------------------------------------------
+Total Samples:         648
+Converged Samples:     629 (97.1%)
+Mean RMSE:             23.250 uT
+Median RMSE:           22.448 uT
+Std RMSE:              2.479 uT
+Mean Position Error:   7.503 mm
+Mean Direction Error:  1.219 deg
+Mean Scale Factor:     1.000
+Mean Computation Time: 0.055 ms
+
